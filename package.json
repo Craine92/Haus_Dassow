@@ -4,9 +4,9 @@
   "version": "3.0.0",
   "type": "module",
   "scripts": {
-    "predev": "node scripts/prepare-runtime-config.mjs",
+    "predev": "node scripts/prepare-runtime-config.mjs && node scripts/generate-icons.mjs",
     "dev": "vite",
-    "prebuild": "node scripts/prepare-runtime-config.mjs",
+    "prebuild": "node scripts/prepare-runtime-config.mjs && node scripts/generate-icons.mjs",
     "build": "tsc -b && vite build",
     "lint": "tsc -b --pretty false",
     "test": "vitest run",

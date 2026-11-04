@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import type { Session } from '@supabase/supabase-js'
 import { parseImportFile } from './lib/import'
 import { normalizeProductUrl, retailerFromUrl } from './lib/links'
+import { parseIncomingShare, type SharedProduct } from './lib/share'
 import { euros, parseEuroToCents, sumItems } from './lib/money'
 import {
   addSignedImageUrls, createHousehold, createInvite, deleteItem, getSession, isSupabaseConfigured,
@@ -143,7 +144,9 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
   const [status, setStatus] = useState('Alle')
   const [priority, setPriority] = useState('Alle')
   const [sort, setSort] = useState('position')
-  const [editor, setEditor] = useState<ShoppingItem | 'new' | null>(null)
+  const [sharedProduct, setSharedProduct] = useState<SharedProduct | null>(() => parseIncomingShare(window.location.search))
+  const [editor, setEditor] = useState<ShoppingItem | 'new' | null>(() => parseIncomingShare(window.location.search) ? 'new' : null)
+  const [linkPasteOpen, setLinkPasteOpen] = useState(false)
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
@@ -213,6 +216,27 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
     }
   }
 
+  function clearShareUrl() {
+    const params = new URLSearchParams(window.location.search)
+    for (const name of ['url', 'text', 'title', 'share_url']) params.delete(name)
+    const query = params.toString()
+    window.history.replaceState(window.history.state, '', window.location.pathname + (query ? '?' + query : '') + window.location.hash)
+  }
+
+  function closeEditor() {
+    setEditor(null)
+    setSharedProduct(null)
+    clearShareUrl()
+  }
+
+  function addProductFromLink(value: string) {
+    const product = parseIncomingShare('?url=' + encodeURIComponent(value))
+    if (!product) { setNotice('Bitte einen gültigen HTTP- oder HTTPS-Produktlink eingeben.'); return }
+    setLinkPasteOpen(false)
+    setSharedProduct(product)
+    setEditor('new')
+  }
+
   function exportJson() {
     const clean = items.map(({ image_url: _imageUrl, ...item }) => item)
     const blob = new Blob([JSON.stringify({ version: 2, budget_cents: household.budget_cents, items: clean, exported_at: new Date().toISOString() }, null, 2)], { type: 'application/json' })
@@ -229,7 +253,7 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
     </aside>
     <main className="main-content">
       <header className="topbar"><div><p className="eyebrow">Einkaufsplanung · {household.name}</p><h1>Schön, dass ihr da seid.</h1><p className="muted">{new Intl.DateTimeFormat('de-DE', { dateStyle: 'full' }).format(new Date())}</p></div>
-        <div className="actions"><button className="button" onClick={() => void invite()} disabled={busy || inviteBusy}>{inviteBusy ? 'Einladung wird erstellt …' : 'Partner einladen'}</button><button className="button" onClick={() => fileRef.current?.click()}>Import</button><button className="button primary" onClick={() => setEditor('new')}>+ Produkt</button><button className="button icon" title="Abmelden" onClick={() => void supabase!.auth.signOut()}>↪</button></div>
+        <div className="actions"><button className="button" onClick={() => void invite()} disabled={busy || inviteBusy}>{inviteBusy ? 'Einladung wird erstellt …' : 'Partner einladen'}</button><button className="button" onClick={() => fileRef.current?.click()}>Import</button><button className="button" onClick={() => setLinkPasteOpen(true)}>Link übernehmen</button><button className="button primary" onClick={() => { setSharedProduct(null); setEditor('new') }}>+ Produkt</button><button className="button icon" title="Abmelden" onClick={() => void supabase!.auth.signOut()}>↪</button></div>
       </header>
       {(error || notice) && <div className={error ? 'notice error' : 'notice'}>{error || notice}</div>}
       <section className="stats">
@@ -249,9 +273,10 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
       {filtered.length ? <section className="product-grid">{filtered.map((item) => <ProductCard key={item.id} item={item} disabled={busy} onEdit={() => setEditor(item)} onStatus={() => void mutate(() => saveItem(household.id, { ...item, status: item.status === 'Wunschliste' ? 'Bestellt' : item.status === 'Bestellt' ? 'Gekauft' : 'Wunschliste' }), 'Status aktualisiert.')} onDelete={() => { if (confirm(`„${item.name}“ wirklich löschen?`)) void mutate(async () => { await deleteItem(household.id, item.id); await removeImage(item.image_path) }, 'Produkt gelöscht.') }} />)}</section>
         : <div className="empty"><span>⌕</span><h3>Keine passenden Produkte</h3><p>Ändere die Filter oder füge eine neue Idee hinzu.</p></div>}
       <input ref={fileRef} hidden type="file" accept="application/json,.json" onChange={(e) => void handleImportFile(e.target.files?.[0])} />
-      {editor && <ItemEditor householdId={household.id} original={editor === 'new' ? null : editor} rooms={rooms} onClose={() => setEditor(null)} onSaved={async () => { setEditor(null); await onRefresh(); setNotice('Produkt gespeichert.') }} />}
+      {editor && <ItemEditor key={editor === 'new' ? 'new-' + (sharedProduct?.url ?? '') : editor.id} householdId={household.id} original={editor === 'new' ? null : editor} prefill={editor === 'new' ? sharedProduct : null} rooms={rooms} onClose={closeEditor} onSaved={async () => { closeEditor(); await onRefresh(); setNotice('Produkt gespeichert.') }} />}
       {importPreview && <ImportDialog preview={importPreview} busy={busy} onClose={() => setImportPreview(null)} onConfirm={() => void confirmImport()} />}
       {inviteCode && <InviteDialog code={inviteCode} onClose={() => setInviteCode(null)} />}
+      {linkPasteOpen && <LinkPasteDialog onClose={() => setLinkPasteOpen(false)} onUse={addProductFromLink} />}
     </main>
   </div>
 }
@@ -272,10 +297,17 @@ function ProductCard({ item, disabled, onEdit, onStatus, onDelete }: { item: Sho
   return <article className="product-card"><div className="product-image">{item.image_url ? <img src={item.image_url} alt="" loading="lazy" /> : <span>⌂</span>}<b className={`badge status-${item.status.toLowerCase()}`}>{item.status}</b></div><div className="product-body"><p className="eyebrow">{item.room} · {item.priority}</p><h3>{item.name}</h3>{item.description && <p className="description">{item.description}</p>}<div className="price"><strong>{euros(item.price_cents * item.quantity)}</strong>{item.quantity > 1 && <span>{item.quantity} × {euros(item.price_cents)}</span>}</div><p className="retailer">{item.retailer || 'Shop noch offen'}</p>{item.note && <p className="note">{item.note}</p>}</div><footer>{item.url ? <a className="button" href={item.url} target="_blank" rel="noopener noreferrer">Shop öffnen</a> : <span />}<div><button className="button icon" title="Status wechseln" disabled={disabled} onClick={onStatus}>✓</button><button className="button icon" title="Bearbeiten" onClick={onEdit}>✎</button><button className="button icon danger" title="Löschen" disabled={disabled} onClick={onDelete}>×</button></div></footer></article>
 }
 
-function ItemEditor({ householdId, original, rooms, onClose, onSaved }: { householdId: string; original: ShoppingItem | null; rooms: string[]; onClose: () => void; onSaved: () => Promise<void> }) {
-  const [draft, setDraft] = useState<ItemDraft>(() => original ? { ...original } : { ...EMPTY_DRAFT, id: crypto.randomUUID(), position: Date.now() })
+function ItemEditor({ householdId, original, prefill, rooms, onClose, onSaved }: { householdId: string; original: ShoppingItem | null; prefill: SharedProduct | null; rooms: string[]; onClose: () => void; onSaved: () => Promise<void> }) {
+  const [draft, setDraft] = useState<ItemDraft>(() => original ? { ...original } : { ...EMPTY_DRAFT, id: crypto.randomUUID(), position: Date.now(), name: prefill?.name ?? '', url: prefill?.url ?? '', retailer: prefill?.retailer ?? '', note: prefill?.note ?? '' })
   const [price, setPrice] = useState(original ? (original.price_cents / 100).toFixed(2).replace('.', ',') : '')
   const [image, setImage] = useState<File | null>(null)
+  const [imagePreview, setImagePreview] = useState<string | null>(null)
+  useEffect(() => {
+    if (!image) { setImagePreview(null); return }
+    const objectUrl = URL.createObjectURL(image)
+    setImagePreview(objectUrl)
+    return () => URL.revokeObjectURL(objectUrl)
+  }, [image])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const roomList = Array.from(new Set([...rooms, draft.room, 'Wohnzimmer', 'Schlafzimmer', 'Küche', 'Bad', 'Arbeiten & Gaming', 'Außenbereich', 'Sonstiges']))
@@ -303,9 +335,20 @@ function ItemEditor({ householdId, original, rooms, onClose, onSaved }: { househ
     <label>Status<select value={draft.status} onChange={(e) => update('status', e.target.value)}>{STATUSES.map((value) => <option key={value}>{value}</option>)}</select></label>
     <label className="full">Produktlink<input type="url" placeholder="https://…" value={draft.url} onChange={(e) => update('url', e.target.value)} /></label>
     <label className="full">Notiz<textarea maxLength={3000} value={draft.note} onChange={(e) => update('note', e.target.value)} /></label>
-    <label className="full upload">Produktbild (JPG, PNG, WebP oder GIF; max. 10 MB)<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(e) => setImage(e.target.files?.[0] ?? null)} />{image && <span>{image.name}</span>}</label>
+    <label className="full upload">Produktbild (JPG, PNG, WebP oder GIF; max. 10 MB)<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(e) => setImage(e.target.files?.[0] ?? null)} />{image && <span>{image.name}</span>}{(imagePreview || original?.image_url) && <img src={imagePreview || original?.image_url || ''} alt="Produktvorschau" style={{ width: '100%', maxWidth: 240, maxHeight: 170, objectFit: 'contain', borderRadius: 12, marginTop: 8 }} />}</label>
     <div className="modal-actions full"><button type="button" className="button" onClick={onClose}>Abbrechen</button><button className="button primary" disabled={busy}>{busy ? 'Wird gespeichert …' : 'Speichern'}</button></div>
   </form></Modal>
+}
+
+function LinkPasteDialog({ onClose, onUse }: { onClose: () => void; onUse: (url: string) => void }) {
+  const [url, setUrl] = useState('')
+  return <Modal title="Produktlink übernehmen" onClose={onClose}>
+    <p className="muted">Kopiere einen Produktlink aus OTTO, Amazon oder einem anderen Shop. Wir übernehmen den Link und erkennen den Shop. Name, Preis und Produktfoto kannst du anschließend ergänzen.</p>
+    <form className="stack" onSubmit={(event) => { event.preventDefault(); onUse(url) }}>
+      <label>Produktlink<input type="url" autoFocus required placeholder="https://www.otto.de/…" value={url} onChange={(event) => setUrl(event.target.value)} /></label>
+      <div className="modal-actions"><button type="button" className="button" onClick={onClose}>Abbrechen</button><button className="button primary">Weiter zum Produkt</button></div>
+    </form>
+  </Modal>
 }
 
 function InviteDialog({ code, onClose }: { code: string; onClose: () => void }) {

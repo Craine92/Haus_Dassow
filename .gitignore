@@ -23,3 +23,6 @@ coverage/
 .supabase/
 supabase/.branches
 supabase/.temp
+
+# Zur Build-Zeit erzeugte PWA-Bilder
+public/icons/
