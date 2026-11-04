@@ -148,11 +148,15 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
   const [editor, setEditor] = useState<ShoppingItem | 'new' | null>(() => parseIncomingShare(window.location.search) ? 'new' : null)
   const [linkPasteOpen, setLinkPasteOpen] = useState(false)
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
+  const [importPickerOpen, setImportPickerOpen] = useState(false)
+  const [importReading, setImportReading] = useState(false)
+  const [importPickerError, setImportPickerError] = useState('')
+  const [importSubmitError, setImportSubmitError] = useState('')
+  const [importProgress, setImportProgress] = useState('')
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
   const [inviteCode, setInviteCode] = useState<string | null>(null)
   const [inviteBusy, setInviteBusy] = useState(false)
-  const fileRef = useRef<HTMLInputElement>(null)
   const rooms = useMemo(() => Array.from(new Set(items.map((item) => item.room))).sort((a, b) => a.localeCompare(b, 'de')), [items])
   const total = sumItems(items)
   const ordered = sumItems(items.filter((item) => item.status === 'Bestellt'))
@@ -177,28 +181,56 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
 
   async function handleImportFile(file?: File) {
     if (!file) return
-    if (file.size > 25 * 1024 * 1024) { setNotice('Die Importdatei darf höchstens 25 MB groß sein.'); return }
-    try { setImportPreview(parseImportFile(await file.text(), new Set(items.map((item) => item.id)))) }
-    catch (cause) { setNotice(`Import nicht möglich: ${messageFor(cause)}`) }
-    if (fileRef.current) fileRef.current.value = ''
+    setImportPickerError('')
+    setImportReading(true)
+    try {
+      if (file.size === 0) throw new Error('Die ausgewählte Datei ist leer.')
+      if (file.size > 25 * 1024 * 1024) throw new Error('Die Importdatei darf höchstens 25 MB groß sein.')
+      const parsed = parseImportFile(await file.text(), new Set(items.map((item) => item.id)))
+      setImportSubmitError('')
+      setImportProgress('')
+      setImportPreview(parsed)
+      setImportPickerOpen(false)
+    } catch (cause) {
+      setImportPickerError(`Datei konnte nicht gelesen werden: ${messageFor(cause)}`)
+    } finally {
+      setImportReading(false)
+    }
   }
 
   async function confirmImport() {
-    if (!importPreview) return
-    await mutate(async () => {
+    if (!importPreview || busy) return
+    setBusy(true)
+    setImportSubmitError('')
+    setNotice('')
+    let uploaded = 0
+    try {
       const current = new Map(items.map((item) => [item.id, item]))
       const prepared: ItemDraft[] = []
       for (const item of importPreview.items) {
         const blob = importPreview.images.get(item.id)
         const existing = current.get(item.id)
         let imagePath = existing?.image_path ?? null
-        if (blob) imagePath = await uploadImage(household.id, item.id, blob)
+        if (blob) {
+          setImportProgress(`Produktbilder werden hochgeladen: ${uploaded + 1} von ${importPreview.images.size}`)
+          imagePath = await uploadImage(household.id, item.id, blob)
+          uploaded += 1
+        }
         prepared.push({ ...item, image_path: imagePath, created_at: existing?.created_at ?? item.created_at })
       }
+      setImportProgress(`Speichere ${prepared.length} Produkte in eurem Haushalt …`)
       await saveItems(household.id, prepared)
       if (importPreview.sourceBudgetCents != null) await updateBudget(household.id, importPreview.sourceBudgetCents)
+      setImportProgress('Einkaufsliste wird aktualisiert …')
+      await onRefresh()
       setImportPreview(null)
-    }, `${importPreview.items.length} Artikel wurden sicher importiert.`)
+      setNotice(`${prepared.length} Artikel wurden erfolgreich importiert.`)
+    } catch (cause) {
+      setImportSubmitError(`Import fehlgeschlagen: ${messageFor(cause)}. Bitte die Meldung prüfen, bevor du es erneut versuchst.`)
+    } finally {
+      setBusy(false)
+      setImportProgress('')
+    }
   }
 
   async function invite() {
@@ -253,7 +285,7 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
     </aside>
     <main className="main-content">
       <header className="topbar"><div><p className="eyebrow">Einkaufsplanung · {household.name}</p><h1>Schön, dass ihr da seid.</h1><p className="muted">{new Intl.DateTimeFormat('de-DE', { dateStyle: 'full' }).format(new Date())}</p></div>
-        <div className="actions"><button className="button" onClick={() => void invite()} disabled={busy || inviteBusy}>{inviteBusy ? 'Einladung wird erstellt …' : 'Partner einladen'}</button><button className="button" onClick={() => fileRef.current?.click()}>Import</button><button className="button" onClick={() => setLinkPasteOpen(true)}>Link übernehmen</button><button className="button primary" onClick={() => { setSharedProduct(null); setEditor('new') }}>+ Produkt</button><button className="button icon" title="Abmelden" onClick={() => void supabase!.auth.signOut()}>↪</button></div>
+        <div className="actions"><button className="button" onClick={() => void invite()} disabled={busy || inviteBusy}>{inviteBusy ? 'Einladung wird erstellt …' : 'Partner einladen'}</button><button className="button" onClick={() => { setImportPickerError(''); setImportPickerOpen(true) }}>Import</button><button className="button" onClick={() => setLinkPasteOpen(true)}>Link übernehmen</button><InstallAppButton /><button className="button primary" onClick={() => { setSharedProduct(null); setEditor('new') }}>+ Produkt</button><button className="button icon" title="Abmelden" onClick={() => void supabase!.auth.signOut()}>↪</button></div>
       </header>
       {(error || notice) && <div className={error ? 'notice error' : 'notice'}>{error || notice}</div>}
       <section className="stats">
@@ -272,9 +304,9 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
       </div>
       {filtered.length ? <section className="product-grid">{filtered.map((item) => <ProductCard key={item.id} item={item} disabled={busy} onEdit={() => setEditor(item)} onStatus={() => void mutate(() => saveItem(household.id, { ...item, status: item.status === 'Wunschliste' ? 'Bestellt' : item.status === 'Bestellt' ? 'Gekauft' : 'Wunschliste' }), 'Status aktualisiert.')} onDelete={() => { if (confirm(`„${item.name}“ wirklich löschen?`)) void mutate(async () => { await deleteItem(household.id, item.id); await removeImage(item.image_path) }, 'Produkt gelöscht.') }} />)}</section>
         : <div className="empty"><span>⌕</span><h3>Keine passenden Produkte</h3><p>Ändere die Filter oder füge eine neue Idee hinzu.</p></div>}
-      <input ref={fileRef} hidden type="file" accept="application/json,.json" onChange={(e) => void handleImportFile(e.target.files?.[0])} />
+      {importPickerOpen && <ImportFilePickerDialog reading={importReading} error={importPickerError} onClose={() => { if (!importReading) setImportPickerOpen(false) }} onFile={(file) => void handleImportFile(file)} />}
       {editor && <ItemEditor key={editor === 'new' ? 'new-' + (sharedProduct?.url ?? '') : editor.id} householdId={household.id} original={editor === 'new' ? null : editor} prefill={editor === 'new' ? sharedProduct : null} rooms={rooms} onClose={closeEditor} onSaved={async () => { closeEditor(); await onRefresh(); setNotice('Produkt gespeichert.') }} />}
-      {importPreview && <ImportDialog preview={importPreview} busy={busy} onClose={() => setImportPreview(null)} onConfirm={() => void confirmImport()} />}
+      {importPreview && <ImportDialog preview={importPreview} busy={busy} error={importSubmitError} progress={importProgress} onClose={() => { if (!busy) setImportPreview(null) }} onConfirm={() => void confirmImport()} />}
       {inviteCode && <InviteDialog code={inviteCode} onClose={() => setInviteCode(null)} />}
       {linkPasteOpen && <LinkPasteDialog onClose={() => setLinkPasteOpen(false)} onUse={addProductFromLink} />}
     </main>
@@ -340,6 +372,56 @@ function ItemEditor({ householdId, original, prefill, rooms, onClose, onSaved }:
   </form></Modal>
 }
 
+interface InstallPromptEvent extends Event {
+  prompt: () => Promise<void>
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>
+}
+
+function InstallAppButton() {
+  const [promptEvent, setPromptEvent] = useState<InstallPromptEvent | null>(null)
+  const [showHelp, setShowHelp] = useState(false)
+  const [installed, setInstalled] = useState(false)
+  useEffect(() => {
+    const onPrompt = (event: Event) => {
+      event.preventDefault()
+      setPromptEvent(event as InstallPromptEvent)
+    }
+    const onInstalled = () => { setInstalled(true); setPromptEvent(null) }
+    window.addEventListener('beforeinstallprompt', onPrompt)
+    window.addEventListener('appinstalled', onInstalled)
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onPrompt)
+      window.removeEventListener('appinstalled', onInstalled)
+    }
+  }, [])
+  async function install() {
+    if (!promptEvent) { setShowHelp(true); return }
+    try {
+      await promptEvent.prompt()
+      await promptEvent.userChoice
+    } catch {
+      setShowHelp(true)
+    } finally {
+      setPromptEvent(null)
+    }
+  }
+  return <>
+    <button type="button" className="button" onClick={() => void install()}>{installed ? 'App installiert ✓' : 'App installieren'}</button>
+    {showHelp && <Modal title="Haus Dassow als App nutzen" onClose={() => setShowHelp(false)}>
+      <p className="muted">Du kannst Haus Dassow mit eigenem Symbol öffnen – ohne die Adresse jedes Mal neu einzugeben.</p>
+      <div className="install-instructions">
+        <h3>Windows · Brave</h3>
+        <p>Öffne das Brave-Menü (≡) und wähle <strong>Speichern und Teilen → Installieren</strong>. Ist die Option nicht vorhanden, nutze <strong>Verknüpfung erstellen</strong> oder erstelle eine Desktopverknüpfung mit der Webadresse.</p>
+        <h3>Windows · Chrome / Edge</h3>
+        <p>Wähle das Installationssymbol in der Adressleiste oder im Browsermenü <strong>App installieren</strong>. Alternativ: <strong>Verknüpfung erstellen</strong>.</p>
+        <h3>iPhone / iPad · Safari</h3>
+        <p>Öffne die Webseite in <strong>Safari</strong>, tippe auf <strong>Teilen → Zum Home-Bildschirm</strong> und aktiviere <strong>Als Web-App öffnen</strong>. Danach <strong>Hinzufügen</strong> antippen.</p>
+      </div>
+      <div className="modal-actions"><button type="button" className="button primary" onClick={() => setShowHelp(false)}>Verstanden</button></div>
+    </Modal>}
+  </>
+}
+
 function LinkPasteDialog({ onClose, onUse }: { onClose: () => void; onUse: (url: string) => void }) {
   const [url, setUrl] = useState('')
   return <Modal title="Produktlink übernehmen" onClose={onClose}>
@@ -385,12 +467,37 @@ function InviteDialog({ code, onClose }: { code: string; onClose: () => void }) 
   </Modal>
 }
 
-function ImportDialog({ preview, busy, onClose, onConfirm }: { preview: ImportPreview; busy: boolean; onClose: () => void; onConfirm: () => void }) {
+function ImportFilePickerDialog({ reading, error, onClose, onFile }: { reading: boolean; error: string; onClose: () => void; onFile: (file?: File) => void }) {
+  return <Modal title="Einkaufsliste importieren" onClose={onClose}>
+    <p className="muted">Wähle die private JSON-Datei aus. Danach siehst du zunächst eine Vorschau mit der Anzahl der Artikel, Bildern und Gesamtsumme. Es wird noch nichts gespeichert.</p>
+    <label className="full upload">JSON-Datei auswählen
+      <input aria-label="JSON-Datei auswählen" type="file" accept=".json,application/json,text/json" disabled={reading} onChange={(event) => onFile(event.currentTarget.files?.[0])} />
+    </label>
+    {reading && <div className="notice" role="status">Datei wird geprüft – bitte einen Moment …</div>}
+    {error && <div className="notice error" role="alert">{error}</div>}
+    <p className="muted">Die Originaldatei für euer Haus heißt <strong>PRIVATE_Haus_Dassow_Startdaten.json</strong> und enthält 46 Positionen mit sieben Bildern. Die Datei wird nicht öffentlich hochgeladen.</p>
+    <div className="modal-actions"><button type="button" className="button" disabled={reading} onClick={onClose}>Schließen</button></div>
+  </Modal>
+}
+
+function ImportDialog({ preview, busy, error, progress, onClose, onConfirm }: { preview: ImportPreview; busy: boolean; error: string; progress: string; onClose: () => void; onConfirm: () => void }) {
   const expected = preview.items.length === 46 && preview.totalCents === 1_049_876
-  return <Modal title="Privaten Import prüfen" onClose={onClose}><div className="import-summary"><div><span>Artikel</span><strong>{preview.items.length}</strong></div><div><span>Plansumme</span><strong>{euros(preview.totalCents)}</strong></div><div><span>Bilder</span><strong>{preview.images.size}</strong></div><div><span>Vorhandene IDs</span><strong>{preview.existingIds}</strong></div></div>
+  return <Modal title="Privaten Import prüfen" onClose={() => { if (!busy) onClose() }}>
+    <div className="import-summary">
+      <div><span>Artikel</span><strong>{preview.items.length}</strong></div>
+      <div><span>Plansumme</span><strong>{euros(preview.totalCents)}</strong></div>
+      <div><span>Bilder</span><strong>{preview.images.size}</strong></div>
+      <div><span>Vorhandene IDs</span><strong>{preview.existingIds}</strong></div>
+    </div>
     <div className={expected ? 'notice success' : 'notice'}>{expected ? 'Die erwarteten 46 Positionen und 10.498,76 € wurden erkannt.' : 'Die Datei weicht vom erwarteten Startbestand (46 Positionen / 10.498,76 €) ab. Bitte vor dem Import prüfen.'}</div>
-    <p className="muted">Gleiche IDs werden aktualisiert; andere vorhandene und neue Einträge bleiben erhalten. Ein erneuter Import erzeugt daher keine Duplikate. {preview.duplicatesInFile ? `${preview.duplicatesInFile} doppelte IDs innerhalb der Datei werden zusammengeführt.` : ''}</p>
-    <div className="modal-actions"><button className="button" onClick={onClose}>Abbrechen</button><button className="button primary" disabled={busy} onClick={onConfirm}>{busy ? 'Import läuft …' : 'Import bestätigen'}</button></div>
+    <p className="muted">Gleiche IDs werden aktualisiert, nicht doppelt angelegt. Sonstige Produkte bleiben erhalten. {preview.duplicatesInFile ? `${preview.duplicatesInFile} doppelte IDs werden zusammengeführt.` : ''}</p>
+    <p className="muted"><strong>Erste Produkte:</strong> {preview.items.slice(0, 4).map((item) => item.name).join(' · ')}{preview.items.length > 4 ? ' …' : ''}</p>
+    {progress && <div role="status" className="notice">{progress}</div>}
+    {error && <div role="alert" className="notice error">{error}</div>}
+    <div className="modal-actions">
+      <button type="button" className="button" disabled={busy} onClick={onClose}>Abbrechen</button>
+      <button type="button" className="button primary" disabled={busy} onClick={onConfirm}>{busy ? 'Import läuft …' : 'Import bestätigen'}</button>
+    </div>
   </Modal>
 }
 
