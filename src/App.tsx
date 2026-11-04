@@ -21,17 +21,27 @@ const EMPTY_DRAFT: ItemDraft = {
 export default function App() {
   const [session, setSession] = useState<Session | null>(null)
   const [ready, setReady] = useState(false)
+  const [recovering, setRecovering] = useState(() =>
+    new URLSearchParams(window.location.search).has('recover') || window.location.hash.includes('type=recovery'))
 
   useEffect(() => {
     if (!supabase) { setReady(true); return }
     getSession().then(setSession).catch(console.error).finally(() => setReady(true))
-    const { data } = supabase.auth.onAuthStateChange((_event, next) => setSession(next))
+    const { data } = supabase.auth.onAuthStateChange((event, next) => {
+      if (event === 'PASSWORD_RECOVERY') setRecovering(true)
+      if (event === 'SIGNED_OUT') setRecovering(false)
+      setSession(next)
+    })
     return () => data.subscription.unsubscribe()
   }, [])
 
   if (!ready) return <CenteredCard title="Haus Dassow" text="Sichere Verbindung wird vorbereitet …" />
   if (!isSupabaseConfigured) return <ConfigurationMissing />
   if (!session) return <AuthScreen />
+  if (recovering) return <PasswordRecovery onFinished={() => {
+    setRecovering(false)
+    window.history.replaceState(window.history.state, '', window.location.pathname)
+  }} />
   return <AuthenticatedApp session={session} />
 }
 
@@ -46,35 +56,103 @@ function CenteredCard({ title, text, children }: { title: string; text: string; 
 }
 
 function AuthScreen() {
-  const [mode, setMode] = useState<'login' | 'signup'>('login')
+  const [mode, setMode] = useState<'login' | 'signup' | 'reset'>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
 
   async function submit(event: FormEvent) {
-    event.preventDefault(); setBusy(true); setNotice('')
+    event.preventDefault()
+    setBusy(true); setNotice('')
     try {
+      if (mode === 'reset') {
+        // Query-Flag hält die Rücksetzung auch dann sichtbar, wenn Supabase
+        // den Token-Hash aus der Adresszeile bereits entfernt hat.
+        const redirectTo = new URL(window.location.pathname + '?recover=1', window.location.origin).toString()
+        const { error } = await supabase!.auth.resetPasswordForEmail(email.trim(), { redirectTo })
+        if (error) throw error
+        setNotice('Wenn für diese E-Mail-Adresse ein Konto existiert, wird eine Nachricht zum Zurücksetzen versendet. Bitte auch den Spam-Ordner prüfen.')
+        return
+      }
       const result = mode === 'login'
-        ? await supabase!.auth.signInWithPassword({ email, password })
-        : await supabase!.auth.signUp({ email, password, options: { emailRedirectTo: window.location.href.split('#')[0] } })
+        ? await supabase!.auth.signInWithPassword({ email: email.trim(), password })
+        : await supabase!.auth.signUp({ email: email.trim(), password, options: { emailRedirectTo: window.location.origin + window.location.pathname } })
       if (result.error) throw result.error
-      if (mode === 'signup' && !result.data.session) setNotice('Bitte bestätige die E-Mail und melde dich anschließend an.')
-    } catch (error) { setNotice(messageFor(error)) } finally { setBusy(false) }
+      if (mode === 'signup' && !result.data.session) setNotice('Bitte den Bestätigungslink in deiner E-Mail öffnen und dich dann anmelden.')
+    } catch (error) {
+      // Keine Offenlegung, ob ein Benutzerkonto existiert.
+      const message = messageFor(error)
+      setNotice(/invalid login credentials|invalid_credentials/i.test(message)
+        ? 'Anmeldung nicht möglich. Bitte E-Mail-Adresse, Passwort und die Bestätigungsmail prüfen. Du kannst über „Passwort vergessen?“ ein neues Passwort setzen.'
+        : message)
+    } finally { setBusy(false) }
+  }
+
+  function changeMode(next: 'login' | 'signup' | 'reset') {
+    setMode(next); setNotice(''); setPassword('')
   }
 
   return <main className="center-page"><section className="auth-card">
-    <div className="brand-icon">⌂</div><p className="eyebrow">Haus Dassow</p><h1>Gemeinsam einrichten.</h1>
-    <p className="muted">Private Einkaufsliste für zwei Konten. Daten werden erst nach der Anmeldung geladen.</p>
+    <div className="brand-icon">⌂</div><p className="eyebrow">Haus Dassow</p>
+    <h1>{mode === 'reset' ? 'Passwort zurücksetzen' : 'Gemeinsam einrichten.'}</h1>
+    <p className="muted">{mode === 'reset' ? 'Gib die E-Mail-Adresse deines Kontos ein. Den Link zum neuen Passwort erhältst du per E-Mail.' : 'Private Einkaufsliste für zwei Konten. Daten werden erst nach der Anmeldung geladen.'}</p>
     <form onSubmit={submit} className="stack">
       <label>E-Mail<input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></label>
-      <label>Passwort<input type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={8} required value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-      {notice && <div className="notice">{notice}</div>}
-      <button className="button primary" disabled={busy}>{busy ? 'Bitte warten …' : mode === 'login' ? 'Sicher anmelden' : 'Konto erstellen'}</button>
+      {mode !== 'reset' && <label>Passwort<input type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={8} required value={password} onChange={(e) => setPassword(e.target.value)} /></label>}
+      {notice && <div className="notice" role="status">{notice}</div>}
+      <button type="submit" className="button primary" disabled={busy}>{busy ? 'Bitte warten …' : mode === 'reset' ? 'Rücksetzungs-E-Mail senden' : mode === 'login' ? 'Sicher anmelden' : 'Konto erstellen'}</button>
     </form>
-    <button className="text-button" onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setNotice('') }}>
-      {mode === 'login' ? 'Noch kein Konto? Registrieren' : 'Bereits registriert? Anmelden'}
+    {mode === 'login' && <button className="text-button" type="button" onClick={() => changeMode('reset')}>Passwort vergessen?</button>}
+    <button className="text-button" type="button" onClick={() => changeMode(mode === 'login' ? 'signup' : 'login')}>
+      {mode === 'login' ? 'Noch kein Konto? Registrieren' : 'Zur Anmeldung'}
     </button>
+  </section></main>
+}
+
+function PasswordRecovery({ onFinished }: { onFinished: () => void }) {
+  const [password, setPassword] = useState('')
+  const [repeatPassword, setRepeatPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [success, setSuccess] = useState(false)
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (password !== repeatPassword) { setNotice('Die beiden Passwörter stimmen nicht überein.'); return }
+    setBusy(true); setNotice('')
+    try {
+      const { error } = await supabase!.auth.updateUser({ password })
+      if (error) throw error
+      setSuccess(true)
+      setPassword('')
+      setRepeatPassword('')
+      setNotice('Passwort geändert. Du kannst dich jetzt mit dem neuen Passwort anmelden.')
+    } catch (error) { setNotice(messageFor(error)) } finally { setBusy(false) }
+  }
+
+  async function finish() {
+    setBusy(true)
+    try {
+      const { error } = await supabase!.auth.signOut()
+      if (error) throw error
+      onFinished()
+    } catch (error) { setNotice(messageFor(error)); setBusy(false) }
+  }
+
+  return <main className="center-page"><section className="auth-card">
+    <div className="brand-icon">⌂</div><p className="eyebrow">Haus Dassow · Konto</p>
+    <h1>Neues Passwort</h1>
+    <p className="muted">Lege ein neues Passwort mit mindestens acht Zeichen fest.</p>
+    <form className="stack" onSubmit={submit}>
+      {!success && <>
+        <label>Neues Passwort<input type="password" autoComplete="new-password" minLength={8} required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+        <label>Passwort wiederholen<input type="password" autoComplete="new-password" minLength={8} required value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} /></label>
+      </>}
+      {notice && <div className={success ? 'notice success' : 'notice'} role="status">{notice}</div>}
+      {!success && <button className="button primary" type="submit" disabled={busy}>{busy ? 'Bitte warten …' : 'Neues Passwort speichern'}</button>}
+    </form>
+    {success && <button className="button primary" type="button" disabled={busy} onClick={() => void finish()}>Zur Anmeldung</button>}
   </section></main>
 }
 
@@ -361,7 +439,23 @@ function Budget({ household, total, onSave }: { household: Household; total: num
 }
 
 function ProductCard({ item, disabled, onEdit, onStatus, onDelete }: { item: ShoppingItem; disabled: boolean; onEdit: () => void; onStatus: () => void; onDelete: () => void }) {
-  return <article className="product-card"><div className="product-image">{item.image_url ? <img src={item.image_url} alt="" loading="lazy" /> : <span>⌂</span>}<b className={`badge status-${item.status.toLowerCase()}`}>{item.status}</b></div><div className="product-body"><p className="eyebrow">{item.room} · {item.priority}</p><h3>{item.name}</h3>{item.description && <p className="description">{item.description}</p>}<div className="price"><strong>{euros(item.price_cents * item.quantity)}</strong>{item.quantity > 1 && <span>{item.quantity} × {euros(item.price_cents)}</span>}</div><p className="retailer">{item.retailer || 'Shop noch offen'}</p>{item.note && <p className="note">{item.note}</p>}</div><footer>{item.url ? <a className="button" href={item.url} target="_blank" rel="noopener noreferrer">Shop öffnen</a> : <span />}<div><button className="button icon" title="Status wechseln" disabled={disabled} onClick={onStatus}>✓</button><button className="button icon" title="Bearbeiten" onClick={onEdit}>✎</button><button className="button icon danger" title="Löschen" disabled={disabled} onClick={onDelete}>×</button></div></footer></article>
+  const [imageBroken, setImageBroken] = useState(false)
+  useEffect(() => setImageBroken(false), [item.image_url])
+  const hasImage = Boolean(item.image_url) && !imageBroken
+  return <article className="product-card">
+    <div className="product-image">
+      {hasImage
+        ? <img src={item.image_url!} alt={`Produktfoto: ${item.name}`} loading="lazy" onError={() => setImageBroken(true)} />
+        : <div className="product-image-empty">
+          <span aria-hidden="true">⌂</span>
+          <small>{imageBroken ? 'Bild konnte nicht geladen werden' : 'Noch kein Produktfoto'}</small>
+          <button className="button" type="button" onClick={onEdit}>{imageBroken ? 'Foto prüfen' : 'Foto hinzufügen'}</button>
+        </div>}
+      <b className={`badge status-${item.status.toLowerCase()}`}>{item.status}</b>
+    </div>
+    <div className="product-body"><p className="eyebrow">{item.room} · {item.priority}</p><h3>{item.name}</h3>{item.description && <p className="description">{item.description}</p>}<div className="price"><strong>{euros(item.price_cents * item.quantity)}</strong>{item.quantity > 1 && <span>{item.quantity} × {euros(item.price_cents)}</span>}</div><p className="retailer">{item.retailer || 'Shop noch offen'}</p>{item.note && <p className="note">{item.note}</p>}</div>
+    <footer>{item.url ? <a className="button" href={item.url} target="_blank" rel="noopener noreferrer">Shop öffnen</a> : <span />}<div><button className="button icon" title="Status wechseln" disabled={disabled} onClick={onStatus}>✓</button><button className="button icon" title="Bearbeiten" onClick={onEdit}>✎</button><button className="button icon danger" title="Löschen" disabled={disabled} onClick={onDelete}>×</button></div></footer>
+  </article>
 }
 
 function ItemEditor({ householdId, original, prefill, rooms, onClose, onSaved }: { householdId: string; original: ShoppingItem | null; prefill: SharedProduct | null; rooms: string[]; onClose: () => void; onSaved: () => Promise<void> }) {
