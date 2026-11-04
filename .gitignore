@@ -1,0 +1,23 @@
+# Private Einkaufsdaten, Bilder und lokale Sicherungen
+PRIVATE_*
+*Startdaten*.json
+*backup*.json
+*Backup*.json
+*.local.json
+.env
+.env.*
+!.env.example
+
+# Abhängigkeiten und Tool-Artefakte
+node_modules/
+dist/
+.vite/
+coverage/
+.DS_Store
+.vscode/
+*.log
+
+# Supabase lokale Konfiguration und Secrets
+.supabase/
+supabase/.branches
+supabase/.temp
