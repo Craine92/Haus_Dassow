@@ -128,3 +128,17 @@ supabase db query --remote --file supabase/tests/rls_policies.test.sql
 - **Keine Live-Updates:** Realtime-Publikation prüfen. Die App lädt im sichtbaren Tab zusätzlich alle 60 Sekunden neu.
 - **Auth-Link führt falsch:** Site URL und Redirect URLs in Supabase müssen exakt zur Pages-URL passen.
 - **404 auf Pages:** Workflow-Artefakt muss `dist/` sein und Vite mit Base `/Haus_Dassow/` bauen.
+
+## App installieren und JSON-Import
+
+Im angemeldeten Dashboard gibt es den sichtbaren Button **App installieren**. Falls
+Brave/Chrome/Edge keine native Installation anbieten, zeigt er Anweisungen für
+Desktop bzw. iPhone (Safari → Teilen → Zum Home-Bildschirm). Der Service Worker
+nutzt ausschließlich Netzwerkantworten und speichert bewusst **keine** privaten
+Einkaufsdaten offline.
+
+Der Button **Import** öffnet einen eigenen Dialog mit sichtbarer Dateiauswahl.
+Für `PRIVATE_Haus_Dassow_Startdaten.json` zeigt die Vorschau 46 Positionen,
+10.498,76 € und sieben Produktbilder. Erst nach expliziter Bestätigung werden
+Produkte und private Bilder in Supabase übernommen. Fehler bei Datei, Upload
+oder Speichern werden direkt im Dialog angezeigt.
