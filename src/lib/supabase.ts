@@ -116,6 +116,20 @@ export async function removeImage(path: string | null): Promise<void> {
   if (error) throw error
 }
 
+export async function resolveProductImage(householdId: string, itemId: string): Promise<{ ok: boolean; status?: string; reason?: string }> {
+  const { data, error } = await client().functions.invoke('resolve-product-image', {
+    body: { householdId, itemId },
+  })
+  if (error) {
+    const status = (error as { context?: { status?: number } }).context?.status
+    if (status === 404) throw new Error('Bilddienst ist noch nicht in Supabase veröffentlicht. Edge Function resolve-product-image deployen.')
+    throw new Error(error.message || 'Bilddienst nicht erreichbar')
+  }
+  if (!data || typeof data !== 'object') throw new Error('Ungültige Antwort vom Bilddienst')
+  if (typeof data.error === 'string') throw new Error(data.error)
+  return { ok: data.ok === true, status: data.status, reason: data.reason }
+}
+
 export function subscribeToHousehold(householdId: string, refresh: () => void): RealtimeChannel {
   return client().channel(`household-${householdId}`)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'shopping_items', filter: `household_id=eq.${householdId}` }, refresh)

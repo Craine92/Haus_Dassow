@@ -142,3 +142,10 @@ Für `PRIVATE_Haus_Dassow_Startdaten.json` zeigt die Vorschau 46 Positionen,
 10.498,76 € und sieben Produktbilder. Erst nach expliziter Bestätigung werden
 Produkte und private Bilder in Supabase übernommen. Fehler bei Datei, Upload
 oder Speichern werden direkt im Dialog angezeigt.
+
+## Automatischer Produktbildimport
+
+Fehlende Bilder für konkrete OTTO-/Amazon-Artikel können über den Button
+**Bilder nachladen** anhand der gespeicherten Links in den privaten Storage
+übernommen werden. Dafür ist ein **einmaliges Deployment der Supabase Edge
+Function** erforderlich; siehe [Anleitung](docs/BILDER_NACHLADEN.md).

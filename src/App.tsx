@@ -8,7 +8,7 @@ import { euros, parseEuroToCents, sumItems } from './lib/money'
 import {
   addSignedImageUrls, createHousehold, createInvite, deleteItem, getSession, isSupabaseConfigured,
   joinHousehold, loadHousehold, loadItems, removeImage, saveItem, saveItems, subscribeToHousehold,
-  supabase, updateBudget, uploadImage, setItemImagePath,
+  supabase, updateBudget, uploadImage, setItemImagePath, resolveProductImage,
 } from './lib/supabase'
 import { PRIORITIES, STATUSES, type Household, type ImportPreview, type ItemDraft, type ShoppingItem } from './types'
 
@@ -234,6 +234,9 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
   const [notice, setNotice] = useState('')
   const [inviteCode, setInviteCode] = useState<string | null>(null)
   const [inviteBusy, setInviteBusy] = useState(false)
+  const [imageLookupBusy, setImageLookupBusy] = useState(false)
+  const [imageLookupProgress, setImageLookupProgress] = useState('')
+  const [imageLookupReport, setImageLookupReport] = useState('')
   const rooms = useMemo(() => Array.from(new Set(items.map((item) => item.room))).sort((a, b) => a.localeCompare(b, 'de')), [items])
   const total = sumItems(items)
   const ordered = sumItems(items.filter((item) => item.status === 'Bestellt'))
@@ -382,6 +385,35 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
     setEditor('new')
   }
 
+  const imagesMissingDirect = items.filter((item) => !item.image_path && /^(https:\/\/(www\.)?otto\.de\/p\/|https:\/\/(www\.)?amazon\.de\/(dp|gp\/product)\/)/i.test(item.url))
+  async function fillMissingProductImages() {
+    if (imageLookupBusy || imagesMissingDirect.length === 0) return
+    if (!window.confirm(`Für ${imagesMissingDirect.length} Artikel versuchen wir, das zugehörige Bild direkt von der Shopseite zu übernehmen. Bestehende Bilder und Preise bleiben unverändert. Fortfahren?`)) return
+    setImageLookupBusy(true)
+    setImageLookupReport('')
+    let ok = 0
+    const failures: string[] = []
+    try {
+      for (let i = 0; i < imagesMissingDirect.length; i++) {
+        const item = imagesMissingDirect[i]
+        setImageLookupProgress(`Produktbild ${i + 1} von ${imagesMissingDirect.length}: ${item.name}`)
+        try {
+          const result = await resolveProductImage(household.id, item.id)
+          if (result.ok) ok++
+          else failures.push(`${item.name}: ${result.reason || 'Kein Bild verfügbar'}`)
+        } catch (cause) {
+          failures.push(`${item.name}: ${messageFor(cause)}`)
+          if (/noch nicht in Supabase veröffentlicht|Edge Function returned a non-2xx/i.test(messageFor(cause))) break
+        }
+      }
+      await onRefresh()
+      setImageLookupReport(`${ok} Bilder ergänzt, ${failures.length} nicht verfügbar. ${failures.slice(0, 3).join(' | ')}${failures.length > 3 ? ` (+${failures.length - 3} weitere)` : ''}`)
+    } finally {
+      setImageLookupProgress('')
+      setImageLookupBusy(false)
+    }
+  }
+
   function exportJson() {
     const clean = items.map(({ image_url: _imageUrl, ...item }) => item)
     const blob = new Blob([JSON.stringify({ version: 2, budget_cents: household.budget_cents, items: clean, exported_at: new Date().toISOString() }, null, 2)], { type: 'application/json' })
@@ -398,9 +430,11 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
     </aside>
     <main className="main-content">
       <header className="topbar"><div><p className="eyebrow">Einkaufsplanung · {household.name}</p><h1>Schön, dass ihr da seid.</h1><p className="muted">{new Intl.DateTimeFormat('de-DE', { dateStyle: 'full' }).format(new Date())}</p></div>
-        <div className="actions"><button className="button" onClick={() => void invite()} disabled={busy || inviteBusy}>{inviteBusy ? 'Einladung wird erstellt …' : 'Partner einladen'}</button><button className="button" onClick={() => { setImportPickerError(''); setImportPickerOpen(true) }}>Import</button><button className="button" onClick={() => setLinkPasteOpen(true)}>Link übernehmen</button><InstallAppButton /><button className="button primary" onClick={() => { setSharedProduct(null); setEditor('new') }}>+ Produkt</button><button className="button icon" title="Abmelden" onClick={() => void supabase!.auth.signOut()}>↪</button></div>
+        <div className="actions"><button className="button" onClick={() => void invite()} disabled={busy || inviteBusy}>{inviteBusy ? 'Einladung wird erstellt …' : 'Partner einladen'}</button><button className="button" onClick={() => { setImportPickerError(''); setImportPickerOpen(true) }}>Import</button><button className="button" onClick={() => setLinkPasteOpen(true)}>Link übernehmen</button><button className="button" disabled={imageLookupBusy || !imagesMissingDirect.length} title="Passende Shopbilder für Produkte ohne Bild suchen und privat speichern" onClick={() => void fillMissingProductImages()}>{imageLookupBusy ? 'Bilder werden gesucht …' : `Bilder nachladen (${imagesMissingDirect.length})`}</button><InstallAppButton /><button className="button primary" onClick={() => { setSharedProduct(null); setEditor('new') }}>+ Produkt</button><button className="button icon" title="Abmelden" onClick={() => void supabase!.auth.signOut()}>↪</button></div>
       </header>
       {(error || notice) && <div className={error ? 'notice error' : 'notice'}>{error || notice}</div>}
+      {imageLookupProgress && <div className="notice" role="status">{imageLookupProgress}</div>}
+      {imageLookupReport && <div className="notice" role="status">{imageLookupReport}</div>}
       <section className="stats">
         <Stat label="Gesamte Planung" value={euros(total)} help={`${items.length} Positionen`} />
         <Stat label="Noch offen" value={euros(open)} help="ohne gekaufte Artikel" accent />
