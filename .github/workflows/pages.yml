@@ -1,34 +1,50 @@
-name: Web-App zu GitHub Pages
+name: Testen und auf GitHub Pages veröffentlichen
 
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - name: Anonymen Supabase-Zugriff prüfen
+        if: github.event_name != 'pull_request'
+        run: node scripts/check-anonymous-access.mjs
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
   deploy:
+    if: github.event_name != 'pull_request'
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
     steps:
-      - name: Repo auschecken
-        uses: actions/checkout@v4
-      - name: Pages konfigurieren
-        uses: actions/configure-pages@v5
-      - name: Statische Website hochladen
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./web
-      - name: Veröffentlichen
+      - name: GitHub Pages veröffentlichen
         id: deployment
         uses: actions/deploy-pages@v4
