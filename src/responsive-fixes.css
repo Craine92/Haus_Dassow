@@ -1,0 +1,36 @@
+/* Intrinsische Formularbreiten dürfen die Login-Karte auf schmalen Geräten nicht aufziehen. */
+.center-page {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 440px;
+  min-width: 0;
+}
+
+.auth-card.wide {
+  width: 100%;
+  max-width: 820px;
+}
+
+.auth-card label,
+.auth-card input,
+.auth-card select,
+.auth-card textarea {
+  min-width: 0;
+}
+
+@media (max-width: 540px) {
+  .center-page {
+    padding: 16px;
+  }
+
+  .auth-card {
+    padding: 28px 22px;
+  }
+
+  .auth-card h1 {
+    overflow-wrap: anywhere;
+  }
+}
