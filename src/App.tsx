@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { parseImportFile } from './lib/import'
+import { messageFor } from './lib/errors'
 import { normalizeProductUrl, retailerFromUrl } from './lib/links'
 import { parseIncomingShare, type SharedProduct } from './lib/share'
 import { euros, parseEuroToCents, sumItems } from './lib/money'
@@ -16,8 +17,6 @@ const EMPTY_DRAFT: ItemDraft = {
   priority: 'Einzug', status: 'Wunschliste', url: '', image_path: null, note: '', source: 'Eigener Eintrag',
   origin: 'Eigen', position: 0, updated_by: null,
 }
-
-const messageFor = (error: unknown) => error instanceof Error ? error.message : 'Unbekannter Fehler'
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -203,30 +202,66 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
     setBusy(true)
     setImportSubmitError('')
     setNotice('')
-    let uploaded = 0
+    let stage = 'Produkte speichern'
     try {
       const current = new Map(items.map((item) => [item.id, item]))
-      const prepared: ItemDraft[] = []
+      // Erst die Artikel in einem transaktionalen PostgREST-Upsert speichern.
+      // So bleibt ein fehlgeschlagener Bild-Upload kein Hindernis für die Liste.
+      setImportProgress(`Speichere ${importPreview.items.length} Produkte …`)
+      const prepared: ItemDraft[] = importPreview.items.map((item) => ({
+        ...item,
+        image_path: current.get(item.id)?.image_path ?? null,
+        created_at: current.get(item.id)?.created_at ?? item.created_at,
+      }))
+      await saveItems(household.id, prepared)
+
+      // Ein Fehler bei Budget oder Storage darf gespeicherte Produkte nicht
+      // als fehlgeschlagen ausgeben. Das Ergebnis bleibt wiederholbar.
+      const warnings: string[] = []
+      let imageCount = 0
       for (const item of importPreview.items) {
         const blob = importPreview.images.get(item.id)
-        const existing = current.get(item.id)
-        let imagePath = existing?.image_path ?? null
-        if (blob) {
-          setImportProgress(`Produktbilder werden hochgeladen: ${uploaded + 1} von ${importPreview.images.size}`)
-          imagePath = await uploadImage(household.id, item.id, blob)
-          uploaded += 1
+        if (!blob) continue
+        if (current.get(item.id)?.image_path) {
+          imageCount += 1
+          continue
         }
-        prepared.push({ ...item, image_path: imagePath, created_at: existing?.created_at ?? item.created_at })
+        stage = `Bild für „${item.name}“`
+        setImportProgress(`Importiere Produktbilder: ${imageCount + warnings.length + 1} / ${importPreview.images.size}`)
+        let uploadedPath: string | null = null
+        try {
+          uploadedPath = await uploadImage(household.id, item.id, blob)
+          await saveItem(household.id, { ...item, image_path: uploadedPath })
+          imageCount += 1
+        } catch (cause) {
+          // Ist nur die Datenbankaktualisierung fehlgeschlagen,
+          // das bereits hochgeladene, verwaiste Bild bestmöglich entfernen.
+          if (uploadedPath) {
+            try { await removeImage(uploadedPath) } catch { /* nur Bereinigung */ }
+          }
+          warnings.push(`${item.name}: ${messageFor(cause)}`)
+        }
       }
-      setImportProgress(`Speichere ${prepared.length} Produkte in eurem Haushalt …`)
-      await saveItems(household.id, prepared)
-      if (importPreview.sourceBudgetCents != null) await updateBudget(household.id, importPreview.sourceBudgetCents)
-      setImportProgress('Einkaufsliste wird aktualisiert …')
+
+      stage = 'Einrichtungsbudget'
+      if (importPreview.sourceBudgetCents != null) {
+        try {
+          await updateBudget(household.id, importPreview.sourceBudgetCents)
+        } catch (cause) {
+          warnings.push(`Budget konnte nicht gesetzt werden: ${messageFor(cause)}`)
+        }
+      }
+
+      stage = 'Liste aktualisieren'
+      setImportProgress('Lade aktualisierte Liste …')
       await onRefresh()
+      const importedCount = importPreview.items.length
       setImportPreview(null)
-      setNotice(`${prepared.length} Artikel wurden erfolgreich importiert.`)
+      setNotice(warnings.length
+        ? `${importedCount} Artikel sind gespeichert, ${imageCount}/${importPreview.images.size} Bilder verfügbar. Hinweise: ${warnings.slice(0, 2).join(' | ')}${warnings.length > 2 ? ` (+${warnings.length - 2} weitere)` : ''}. Du kannst die gleiche JSON später erneut importieren – bestehende Artikel werden nicht verdoppelt.`
+        : `${importedCount} Artikel und ${imageCount} Produktbilder wurden erfolgreich importiert.`)
     } catch (cause) {
-      setImportSubmitError(`Import fehlgeschlagen: ${messageFor(cause)}. Bitte die Meldung prüfen, bevor du es erneut versuchst.`)
+      setImportSubmitError(`Import bei „${stage}“ fehlgeschlagen: ${messageFor(cause)}. Der Dialog bleibt geöffnet und du kannst nach Prüfung erneut starten.`)
     } finally {
       setBusy(false)
       setImportProgress('')
