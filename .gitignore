@@ -11,11 +11,13 @@ PRIVATE_*
 # Abhängigkeiten und Tool-Artefakte
 node_modules/
 dist/
+public/config.js
 .vite/
 coverage/
 .DS_Store
 .vscode/
 *.log
+*.tsbuildinfo
 
 # Supabase lokale Konfiguration und Secrets
 .supabase/
