@@ -1,5 +1,6 @@
 import { createClient, type RealtimeChannel, type Session } from '@supabase/supabase-js'
 import type { Household, ItemDraft, ShoppingItem } from '../types'
+import { itemUpsertPayload } from './itemPayload'
 
 const runtimeConfig = window.HAUS_DASSOW_CONFIG
 const url = import.meta.env.VITE_SUPABASE_URL?.trim() || runtimeConfig?.url?.trim() || ''
@@ -62,7 +63,7 @@ export async function addSignedImageUrls(items: ShoppingItem[]): Promise<Shoppin
 }
 
 export async function saveItem(householdId: string, item: ItemDraft): Promise<void> {
-  const { error } = await client().from('shopping_items').upsert({ ...item, household_id: householdId }, {
+  const { error } = await client().from('shopping_items').upsert(itemUpsertPayload(householdId, item), {
     onConflict: 'household_id,id',
   })
   if (error) throw error
@@ -70,10 +71,22 @@ export async function saveItem(householdId: string, item: ItemDraft): Promise<vo
 
 export async function saveItems(householdId: string, items: ItemDraft[]): Promise<void> {
   for (let index = 0; index < items.length; index += 50) {
-    const rows = items.slice(index, index + 50).map((item) => ({ ...item, household_id: householdId }))
+    const rows = items.slice(index, index + 50).map((item) => itemUpsertPayload(householdId, item))
     const { error } = await client().from('shopping_items').upsert(rows, { onConflict: 'household_id,id' })
     if (error) throw error
   }
+}
+
+/** Ein vorhandenes Produktbild ändern, ohne den ursprünglichen created_at-Wert zu überschreiben. */
+export async function setItemImagePath(householdId: string, id: string, imagePath: string): Promise<void> {
+  const { data, error } = await client().from('shopping_items')
+    .update({ image_path: imagePath })
+    .eq('household_id', householdId)
+    .eq('id', id)
+    .select('id')
+    .maybeSingle()
+  if (error) throw error
+  if (!data) throw new Error('Produkt für Bildaktualisierung nicht gefunden oder keine Berechtigung.')
 }
 
 export async function deleteItem(householdId: string, id: string): Promise<void> {

@@ -8,7 +8,7 @@ import { euros, parseEuroToCents, sumItems } from './lib/money'
 import {
   addSignedImageUrls, createHousehold, createInvite, deleteItem, getSession, isSupabaseConfigured,
   joinHousehold, loadHousehold, loadItems, removeImage, saveItem, saveItems, subscribeToHousehold,
-  supabase, updateBudget, uploadImage,
+  supabase, updateBudget, uploadImage, setItemImagePath,
 } from './lib/supabase'
 import { PRIORITIES, STATUSES, type Household, type ImportPreview, type ItemDraft, type ShoppingItem } from './types'
 
@@ -231,7 +231,7 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
         let uploadedPath: string | null = null
         try {
           uploadedPath = await uploadImage(household.id, item.id, blob)
-          await saveItem(household.id, { ...item, image_path: uploadedPath })
+          await setItemImagePath(household.id, item.id, uploadedPath)
           imageCount += 1
         } catch (cause) {
           // Ist nur die Datenbankaktualisierung fehlgeschlagen,
