@@ -497,6 +497,56 @@ function ItemEditor({ householdId, original, prefill, rooms, onClose, onSaved }:
   const [price, setPrice] = useState(original ? (original.price_cents / 100).toFixed(2).replace('.', ',') : '')
   const [image, setImage] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
+  const [pasteHint, setPasteHint] = useState('')
+
+  function useImageBlob(blob: Blob) {
+    if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(blob.type)) {
+      setPasteHint('Die Zwischenablage enthält kein unterstütztes Bild.')
+      return
+    }
+    if (blob.size > 10 * 1024 * 1024) {
+      setPasteHint('Das Bild ist größer als 10 MB. Bitte eine kleinere Aufnahme verwenden.')
+      return
+    }
+    const ext = blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/webp' ? 'webp' : blob.type === 'image/gif' ? 'gif' : 'png'
+    setImage(new File([blob], `produktfoto.${ext}`, { type: blob.type }))
+    setPasteHint('Bild übernommen! Prüfe die Vorschau und klicke auf Speichern.')
+    setError('')
+  }
+
+  async function pasteImageFromClipboard() {
+    setPasteHint('')
+    try {
+      if (!navigator.clipboard?.read) throw new Error('Zwischenablage konnte nicht gelesen werden.')
+      const contents = await navigator.clipboard.read()
+      for (const content of contents) {
+        const mime = content.types.find((type) => ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(type))
+        if (!mime) continue
+        useImageBlob(await content.getType(mime))
+        return
+      }
+      setPasteHint('Kein Bild in der Zwischenablage. Öffne bei OTTO das Produktbild und wähle Rechtsklick → Bild kopieren. Alternativ mit Win + Shift + S einen Bildausschnitt aufnehmen.')
+    } catch {
+      setPasteHint('Brave hat den Zugriff auf die Zwischenablage blockiert. Nutze Strg + V im geöffneten Produktdialog oder lade ein gespeichertes Bild hoch.')
+    }
+  }
+
+  useEffect(() => {
+    function handlePastedImage(event: ClipboardEvent) {
+      const target = event.target
+      // Reines Einfügen von Text in Eingabefelder nicht verändern.
+      const imageItem = Array.from(event.clipboardData?.items ?? []).find((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      if (!imageItem) return
+      if (target instanceof HTMLInputElement && target.type === 'file') return
+      const file = imageItem.getAsFile()
+      if (!file) return
+      event.preventDefault()
+      useImageBlob(file)
+    }
+    window.addEventListener('paste', handlePastedImage)
+    return () => window.removeEventListener('paste', handlePastedImage)
+  }, [])
+
   useEffect(() => {
     if (!image) { setImagePreview(null); return }
     const objectUrl = URL.createObjectURL(image)
@@ -530,7 +580,17 @@ function ItemEditor({ householdId, original, prefill, rooms, onClose, onSaved }:
     <label>Status<select value={draft.status} onChange={(e) => update('status', e.target.value)}>{STATUSES.map((value) => <option key={value}>{value}</option>)}</select></label>
     <label className="full">Produktlink<input type="url" placeholder="https://…" value={draft.url} onChange={(e) => update('url', e.target.value)} /></label>
     <label className="full">Notiz<textarea maxLength={3000} value={draft.note} onChange={(e) => update('note', e.target.value)} /></label>
-    <label className="full upload">Produktbild (JPG, PNG, WebP oder GIF; max. 10 MB)<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(e) => setImage(e.target.files?.[0] ?? null)} />{image && <span>{image.name}</span>}{(imagePreview || original?.image_url) && <img src={imagePreview || original?.image_url || ''} alt="Produktvorschau" style={{ width: '100%', maxWidth: 240, maxHeight: 170, objectFit: 'contain', borderRadius: 12, marginTop: 8 }} />}</label>
+    <div className="full upload">
+      <strong>Produktbild</strong>
+      <p className="muted" style={{ margin: '5px 0 12px' }}>Bei OTTO Produktbild öffnen → Rechtsklick → <b>Bild kopieren</b>. Dann hier „Bild aus Zwischenablage“ klicken oder <b>Strg + V</b> drücken. Alternativ mit Win + Shift + S einen Ausschnitt aufnehmen.</p>
+      <button type="button" className="button" disabled={busy} onClick={() => void pasteImageFromClipboard()}>Bild aus Zwischenablage einfügen</button>
+      {pasteHint && <div className="notice" role="status" style={{ marginTop: 9 }}>{pasteHint}</div>}
+      <label style={{ marginTop: 12 }}>Oder Datei auswählen (JPG, PNG, WebP, GIF; max. 10 MB)
+        <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(e) => { setImage(e.target.files?.[0] ?? null); setPasteHint('') }} />
+      </label>
+      {image && <p>{image.name}</p>}
+      {(imagePreview || original?.image_url) && <img src={imagePreview || original?.image_url || ''} alt="Produktvorschau" style={{ width: '100%', maxWidth: 320, maxHeight: 230, objectFit: 'contain', borderRadius: 12, marginTop: 8 }} />}
+    </div>
     <div className="modal-actions full"><button type="button" className="button" onClick={onClose}>Abbrechen</button><button className="button primary" disabled={busy}>{busy ? 'Wird gespeichert …' : 'Speichern'}</button></div>
   </form></Modal>
 }
