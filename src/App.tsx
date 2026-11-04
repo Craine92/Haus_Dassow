@@ -147,6 +147,8 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
+  const [inviteCode, setInviteCode] = useState<string | null>(null)
+  const [inviteBusy, setInviteBusy] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const rooms = useMemo(() => Array.from(new Set(items.map((item) => item.room))).sort((a, b) => a.localeCompare(b, 'de')), [items])
   const total = sumItems(items)
@@ -197,11 +199,18 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
   }
 
   async function invite() {
-    await mutate(async () => {
+    setInviteBusy(true)
+    setNotice('')
+    try {
+      // Einladungen verändern die Produktliste nicht: kein Reload und keine
+      // leere Erfolgsmeldung, die den generierten Code sofort wieder ausblendet.
       const code = await createInvite()
-      await navigator.clipboard.writeText(code)
-      setNotice(`Einmaliger Einladungscode kopiert: ${code}`)
-    }, '')
+      setInviteCode(code)
+    } catch (cause) {
+      setNotice(`Einladung konnte nicht erstellt werden: ${messageFor(cause)}`)
+    } finally {
+      setInviteBusy(false)
+    }
   }
 
   function exportJson() {
@@ -220,7 +229,7 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
     </aside>
     <main className="main-content">
       <header className="topbar"><div><p className="eyebrow">Einkaufsplanung · {household.name}</p><h1>Schön, dass ihr da seid.</h1><p className="muted">{new Intl.DateTimeFormat('de-DE', { dateStyle: 'full' }).format(new Date())}</p></div>
-        <div className="actions"><button className="button" onClick={() => void invite()} disabled={busy}>Partner einladen</button><button className="button" onClick={() => fileRef.current?.click()}>Import</button><button className="button primary" onClick={() => setEditor('new')}>+ Produkt</button><button className="button icon" title="Abmelden" onClick={() => void supabase!.auth.signOut()}>↪</button></div>
+        <div className="actions"><button className="button" onClick={() => void invite()} disabled={busy || inviteBusy}>{inviteBusy ? 'Einladung wird erstellt …' : 'Partner einladen'}</button><button className="button" onClick={() => fileRef.current?.click()}>Import</button><button className="button primary" onClick={() => setEditor('new')}>+ Produkt</button><button className="button icon" title="Abmelden" onClick={() => void supabase!.auth.signOut()}>↪</button></div>
       </header>
       {(error || notice) && <div className={error ? 'notice error' : 'notice'}>{error || notice}</div>}
       <section className="stats">
@@ -242,6 +251,7 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
       <input ref={fileRef} hidden type="file" accept="application/json,.json" onChange={(e) => void handleImportFile(e.target.files?.[0])} />
       {editor && <ItemEditor householdId={household.id} original={editor === 'new' ? null : editor} rooms={rooms} onClose={() => setEditor(null)} onSaved={async () => { setEditor(null); await onRefresh(); setNotice('Produkt gespeichert.') }} />}
       {importPreview && <ImportDialog preview={importPreview} busy={busy} onClose={() => setImportPreview(null)} onConfirm={() => void confirmImport()} />}
+      {inviteCode && <InviteDialog code={inviteCode} onClose={() => setInviteCode(null)} />}
     </main>
   </div>
 }
@@ -296,6 +306,40 @@ function ItemEditor({ householdId, original, rooms, onClose, onSaved }: { househ
     <label className="full upload">Produktbild (JPG, PNG, WebP oder GIF; max. 10 MB)<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(e) => setImage(e.target.files?.[0] ?? null)} />{image && <span>{image.name}</span>}</label>
     <div className="modal-actions full"><button type="button" className="button" onClick={onClose}>Abbrechen</button><button className="button primary" disabled={busy}>{busy ? 'Wird gespeichert …' : 'Speichern'}</button></div>
   </form></Modal>
+}
+
+function InviteDialog({ code, onClose }: { code: string; onClose: () => void }) {
+  const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  async function copyCode() {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Zwischenablage nicht verfügbar')
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      setCopyError(false)
+    } catch {
+      // Brave und andere Browser können Clipboard-Zugriffe verweigern.
+      // Der Code bleibt immer sichtbar und kann manuell kopiert werden.
+      inputRef.current?.focus()
+      inputRef.current?.select()
+      setCopyError(true)
+    }
+  }
+
+  return <Modal title="Partner einladen" onClose={onClose}>
+    <p className="muted">Teile diesen einmalig verwendbaren Einladungscode mit Justine. Er ist 48 Stunden gültig. Sie kann ihn nach der Anmeldung unter „Einladung nutzen“ eingeben.</p>
+    <label>Dein Einladungscode
+      <input ref={inputRef} aria-label="Einladungscode" readOnly value={code} onFocus={(event) => event.currentTarget.select()} />
+    </label>
+    {copied && <div className="notice success" role="status">Einladungscode wurde kopiert.</div>}
+    {copyError && <div className="notice" role="status">Automatisches Kopieren wurde blockiert. Der Code ist markiert – kopiere ihn mit Strg+C.</div>}
+    <div className="modal-actions">
+      <button type="button" className="button" onClick={onClose}>Schließen</button>
+      <button type="button" className="button primary" onClick={() => void copyCode()}>{copied ? 'Erneut kopieren' : 'Code kopieren'}</button>
+    </div>
+  </Modal>
 }
 
 function ImportDialog({ preview, busy, onClose, onConfirm }: { preview: ImportPreview; busy: boolean; onClose: () => void; onConfirm: () => void }) {
