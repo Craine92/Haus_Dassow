@@ -1,0 +1,47 @@
+name: Notfall-Deployment Haus Dassow
+
+# Bewusst unabhängig vom bisherigen (festhängenden) Pages-Workflow.
+# Nur das Erstellen/Aendern dieser Datei oder ein manueller Start loest ihn aus.
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/hotfix-pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Build und Tests (alternativer Runner)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - name: Anonymen Supabase-Zugriff pruefen
+        run: node scripts/check-anonymous-access.mjs
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    name: GitHub Pages veroeffentlichen
+    needs: quality
+    runs-on: ubuntu-22.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: pages
