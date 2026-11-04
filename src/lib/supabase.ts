@@ -1,6 +1,6 @@
 import { createClient, type RealtimeChannel, type Session } from '@supabase/supabase-js'
 import type { Household, ItemDraft, ShoppingItem } from '../types'
-import { itemUpsertPayload } from './itemPayload'
+import { itemUpdatePayload, itemUpsertPayload } from './itemPayload'
 
 const runtimeConfig = window.HAUS_DASSOW_CONFIG
 const url = import.meta.env.VITE_SUPABASE_URL?.trim() || runtimeConfig?.url?.trim() || ''
@@ -63,10 +63,24 @@ export async function addSignedImageUrls(items: ShoppingItem[]): Promise<Shoppin
 }
 
 export async function saveItem(householdId: string, item: ItemDraft): Promise<void> {
-  const { error } = await client().from('shopping_items').upsert(itemUpsertPayload(householdId, item), {
-    onConflict: 'household_id,id',
-  })
-  if (error) throw error
+  if (item.created_at) {
+    // Ein bestehendes Produkt bearbeiten: keine UI-Felder und kein created_at schreiben.
+    const { data, error } = await client().from('shopping_items')
+      .update(itemUpdatePayload(item))
+      .eq('household_id', householdId)
+      .eq('id', item.id)
+      .select('id')
+      .maybeSingle()
+    if (error) throw error
+    if (!data) throw new Error('Änderung nicht gespeichert: Artikel existiert nicht oder du hast keine Schreibberechtigung.')
+  } else {
+    const { data, error } = await client().from('shopping_items')
+      .insert(itemUpsertPayload(householdId, item))
+      .select('id')
+      .maybeSingle()
+    if (error) throw error
+    if (!data) throw new Error('Neues Produkt konnte nicht gespeichert werden. Bitte erneut anmelden.')
+  }
 }
 
 export async function saveItems(householdId: string, items: ItemDraft[]): Promise<void> {
@@ -90,8 +104,14 @@ export async function setItemImagePath(householdId: string, id: string, imagePat
 }
 
 export async function deleteItem(householdId: string, id: string): Promise<void> {
-  const { error } = await client().from('shopping_items').delete().eq('household_id', householdId).eq('id', id)
+  const { data, error } = await client().from('shopping_items')
+    .delete()
+    .eq('household_id', householdId)
+    .eq('id', id)
+    .select('id')
+    .maybeSingle()
   if (error) throw error
+  if (!data) throw new Error('Artikel wurde nicht gelöscht: nicht gefunden oder keine Berechtigung.')
 }
 
 export async function updateBudget(householdId: string, budgetCents: number): Promise<void> {

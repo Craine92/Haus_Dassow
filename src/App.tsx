@@ -232,6 +232,10 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
   const [importProgress, setImportProgress] = useState('')
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
+  const [actionFeedback, setActionFeedback] = useState<{ message: string; failed: boolean } | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<ShoppingItem | null>(null)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
   const [inviteCode, setInviteCode] = useState<string | null>(null)
   const [inviteBusy, setInviteBusy] = useState(false)
   const [imageLookupBusy, setImageLookupBusy] = useState(false)
@@ -255,8 +259,38 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
   }), [items, room, status, priority, search, sort])
 
   async function mutate(task: () => Promise<void>, success: string) {
-    setBusy(true); setNotice('')
-    try { await task(); await onRefresh(); setNotice(success) } catch (cause) { setNotice(messageFor(cause)) } finally { setBusy(false) }
+    setBusy(true); setNotice(''); setActionFeedback(null)
+    try {
+      await task()
+      await onRefresh()
+      setNotice(success)
+      if (success) setActionFeedback({ message: success, failed: false })
+    } catch (cause) {
+      const message = messageFor(cause)
+      setNotice(message)
+      setActionFeedback({ message, failed: true })
+    } finally { setBusy(false) }
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget || deleteBusy) return
+    setDeleteBusy(true); setDeleteError('')
+    const target = deleteTarget
+    try {
+      // Zuerst Datensatz sicher löschen; Foto anschließend nur bestmöglich entfernen.
+      await deleteItem(household.id, target.id)
+      if (target.image_path) {
+        try { await removeImage(target.image_path) } catch { /* Hauptdatensatz bereits gelöscht */ }
+      }
+      setDeleteTarget(null)
+      await onRefresh()
+      setNotice(`„${target.name}“ wurde gelöscht.`)
+      setActionFeedback({ message: `„${target.name}“ wurde gelöscht.`, failed: false })
+    } catch (cause) {
+      const message = messageFor(cause)
+      setDeleteError(message)
+      setActionFeedback({ message, failed: true })
+    } finally { setDeleteBusy(false) }
   }
 
   async function handleImportFile(file?: File) {
@@ -433,6 +467,10 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
         <div className="actions"><button className="button" onClick={() => void invite()} disabled={busy || inviteBusy}>{inviteBusy ? 'Einladung wird erstellt …' : 'Partner einladen'}</button><button className="button" onClick={() => { setImportPickerError(''); setImportPickerOpen(true) }}>Import</button><button className="button" onClick={() => setLinkPasteOpen(true)}>Link übernehmen</button><button className="button" disabled={imageLookupBusy || !imagesMissingDirect.length} title="Passende Shopbilder für Produkte ohne Bild suchen und privat speichern" onClick={() => void fillMissingProductImages()}>{imageLookupBusy ? 'Bilder werden gesucht …' : `Bilder nachladen (${imagesMissingDirect.length})`}</button><InstallAppButton /><button className="button primary" onClick={() => { setSharedProduct(null); setEditor('new') }}>+ Produkt</button><button className="button icon" title="Abmelden" onClick={() => void supabase!.auth.signOut()}>↪</button></div>
       </header>
       {(error || notice) && <div className={error ? 'notice error' : 'notice'}>{error || notice}</div>}
+      {actionFeedback && <div role="status" aria-live="polite" className={actionFeedback.failed ? 'action-feedback fail' : 'action-feedback'}>
+        <span>{actionFeedback.message}</span>
+        <button type="button" onClick={() => setActionFeedback(null)} aria-label="Meldung schließen">×</button>
+      </div>}
       {imageLookupProgress && <div className="notice" role="status">{imageLookupProgress}</div>}
       {imageLookupReport && <div className="notice" role="status">{imageLookupReport}</div>}
       <section className="stats">
@@ -449,12 +487,20 @@ function Dashboard({ household, items, error, onRefresh }: { household: Househol
         <select aria-label="Priorität" value={priority} onChange={(e) => setPriority(e.target.value)}><option>Alle</option>{PRIORITIES.map((value) => <option key={value}>{value}</option>)}</select>
         <select aria-label="Sortierung" value={sort} onChange={(e) => setSort(e.target.value)}><option value="position">Planreihenfolge</option><option value="name">Name</option><option value="price-asc">Preis aufsteigend</option><option value="price-desc">Preis absteigend</option></select>
       </div>
-      {filtered.length ? <section className="product-grid">{filtered.map((item) => <ProductCard key={item.id} item={item} disabled={busy} onEdit={() => setEditor(item)} onStatus={() => void mutate(() => saveItem(household.id, { ...item, status: item.status === 'Wunschliste' ? 'Bestellt' : item.status === 'Bestellt' ? 'Gekauft' : 'Wunschliste' }), 'Status aktualisiert.')} onDelete={() => { if (confirm(`„${item.name}“ wirklich löschen?`)) void mutate(async () => { await deleteItem(household.id, item.id); await removeImage(item.image_path) }, 'Produkt gelöscht.') }} />)}</section>
+      {filtered.length ? <section className="product-grid">{filtered.map((item) => <ProductCard key={item.id} item={item} disabled={busy} onEdit={() => setEditor(item)} onStatus={() => void mutate(() => saveItem(household.id, { ...item, status: item.status === 'Wunschliste' ? 'Bestellt' : item.status === 'Bestellt' ? 'Gekauft' : 'Wunschliste' }), 'Status aktualisiert.')} onDelete={() => { setDeleteError(''); setDeleteTarget(item) }} />)}</section>
         : <div className="empty"><span>⌕</span><h3>Keine passenden Produkte</h3><p>Ändere die Filter oder füge eine neue Idee hinzu.</p></div>}
       {importPickerOpen && <ImportFilePickerDialog reading={importReading} error={importPickerError} onClose={() => { if (!importReading) setImportPickerOpen(false) }} onFile={(file) => void handleImportFile(file)} />}
-      {editor && <ItemEditor key={editor === 'new' ? 'new-' + (sharedProduct?.url ?? '') : editor.id} householdId={household.id} original={editor === 'new' ? null : editor} prefill={editor === 'new' ? sharedProduct : null} rooms={rooms} onClose={closeEditor} onSaved={async () => { closeEditor(); await onRefresh(); setNotice('Produkt gespeichert.') }} />}
+      {editor && <ItemEditor key={editor === 'new' ? 'new-' + (sharedProduct?.url ?? '') : editor.id} householdId={household.id} original={editor === 'new' ? null : editor} prefill={editor === 'new' ? sharedProduct : null} rooms={rooms} onClose={closeEditor} onSaved={async () => {
+        closeEditor()
+        await onRefresh()
+        setNotice('Produkt gespeichert.')
+        setActionFeedback({ message: 'Produkt gespeichert.', failed: false })
+      }} />}
       {importPreview && <ImportDialog preview={importPreview} busy={busy} error={importSubmitError} progress={importProgress} onClose={() => { if (!busy) setImportPreview(null) }} onConfirm={() => void confirmImport()} />}
       {inviteCode && <InviteDialog code={inviteCode} onClose={() => setInviteCode(null)} />}
+      {deleteTarget && <DeleteProductDialog name={deleteTarget.name} busy={deleteBusy} error={deleteError}
+        onClose={() => { if (!deleteBusy) setDeleteTarget(null) }}
+        onConfirm={() => void confirmDelete()} />}
       {linkPasteOpen && <LinkPasteDialog onClose={() => setLinkPasteOpen(false)} onUse={addProductFromLink} />}
     </main>
   </div>
@@ -492,9 +538,25 @@ function ProductCard({ item, disabled, onEdit, onStatus, onDelete }: { item: Sho
   </article>
 }
 
+function DeleteProductDialog({ name, busy, error, onClose, onConfirm }: {
+  name: string; busy: boolean; error: string; onClose: () => void; onConfirm: () => void
+}) {
+  return <Modal title="Produkt wirklich löschen?" onClose={() => { if (!busy) onClose() }}>
+    <p>Willst du <strong>„{name}“</strong> dauerhaft aus eurer Einkaufsliste entfernen?</p>
+    <p className="muted">Diese Änderung wird sofort mit eurem gemeinsamen Haushalt synchronisiert.</p>
+    {error && <div className="notice error" role="alert">{error}</div>}
+    <div className="modal-actions">
+      <button type="button" className="button" disabled={busy} onClick={onClose}>Abbrechen</button>
+      <button type="button" className="button danger" disabled={busy} onClick={onConfirm}>
+        {busy ? 'Wird gelöscht …' : 'Ja, Produkt löschen'}
+      </button>
+    </div>
+  </Modal>
+}
+
 function ItemEditor({ householdId, original, prefill, rooms, onClose, onSaved }: { householdId: string; original: ShoppingItem | null; prefill: SharedProduct | null; rooms: string[]; onClose: () => void; onSaved: () => Promise<void> }) {
   const [draft, setDraft] = useState<ItemDraft>(() => original ? { ...original } : { ...EMPTY_DRAFT, id: crypto.randomUUID(), position: Date.now(), name: prefill?.name ?? '', url: prefill?.url ?? '', retailer: prefill?.retailer ?? '', note: prefill?.note ?? '' })
-  const [price, setPrice] = useState(original ? (original.price_cents / 100).toFixed(2).replace('.', ',') : '')
+  const [price, setPrice] = useState(original ? (original.price_cents / 100).toFixed(2).replace('.', ',') : '0,00')
   const [image, setImage] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [pasteHint, setPasteHint] = useState('')
@@ -563,12 +625,24 @@ function ItemEditor({ householdId, original, prefill, rooms, onClose, onSaved }:
       const url = normalizeProductUrl(draft.url)
       let imagePath = draft.image_path
       if (image) imagePath = await uploadImage(householdId, draft.id, image)
-      await saveItem(householdId, { ...draft, name: draft.name.trim(), url, retailer: draft.retailer.trim() || retailerFromUrl(url), price_cents: parseEuroToCents(price), image_path: imagePath })
-      if (image && original?.image_path) await removeImage(original.image_path)
+      try {
+        await saveItem(householdId, { ...draft, name: draft.name.trim(), url, retailer: draft.retailer.trim() || retailerFromUrl(url), price_cents: parseEuroToCents(price), image_path: imagePath })
+      } catch (cause) {
+        // Fehlgeschlagene Speicherung darf keine verwaisten neuen Bilder hinterlassen.
+        if (image && imagePath && imagePath !== original?.image_path) {
+          try { await removeImage(imagePath) } catch { /* best effort */ }
+        }
+        throw cause
+      }
+      if (image && original?.image_path) {
+        try { await removeImage(original.image_path) } catch { /* Datensatz bereits erfolgreich gespeichert */ }
+      }
       await onSaved()
-    } catch (cause) { setError(messageFor(cause)); setBusy(false) }
+    } catch (cause) { setError(`Speichern fehlgeschlagen: ${messageFor(cause)}`); setBusy(false) }
   }
-  return <Modal title={original ? 'Produkt bearbeiten' : 'Produkt hinzufügen'} onClose={onClose}><form className="editor-form" onSubmit={submit}>
+  return <Modal title={original ? 'Produkt bearbeiten' : 'Produkt hinzufügen'} onClose={onClose}><form className="editor-form" onSubmit={submit}
+    onInvalid={(event) => { const field = event.target instanceof HTMLInputElement ? event.target : null
+      setError(`Bitte Pflichtfelder prüfen: ${field?.labels?.[0]?.textContent?.trim() || field?.getAttribute('aria-label') || 'Ein Feld ist ungültig'}.`) }}>
     {error && <div className="notice error">{error}</div>}
     <label className="full">Produktname *<input required maxLength={170} value={draft.name} onChange={(e) => update('name', e.target.value)} /></label>
     <label className="full">Kurzbeschreibung<input maxLength={500} value={draft.description} onChange={(e) => update('description', e.target.value)} /></label>
@@ -591,7 +665,7 @@ function ItemEditor({ householdId, original, prefill, rooms, onClose, onSaved }:
       {image && <p>{image.name}</p>}
       {(imagePreview || original?.image_url) && <img src={imagePreview || original?.image_url || ''} alt="Produktvorschau" style={{ width: '100%', maxWidth: 320, maxHeight: 230, objectFit: 'contain', borderRadius: 12, marginTop: 8 }} />}
     </div>
-    <div className="modal-actions full"><button type="button" className="button" onClick={onClose}>Abbrechen</button><button className="button primary" disabled={busy}>{busy ? 'Wird gespeichert …' : 'Speichern'}</button></div>
+    <div className="modal-actions full"><button type="button" className="button" onClick={onClose}>Abbrechen</button><button type="submit" className="button primary" disabled={busy}>{busy ? 'Wird gespeichert …' : 'Speichern'}</button></div>
   </form></Modal>
 }
 

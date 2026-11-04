@@ -1,19 +1,41 @@
 import type { ItemDraft } from '../types'
 
 /**
- * PostgRESTs Bulk-Upsert setzt bei fehlenden Feldern je nach Schema-Cache
- * NULL statt eines DB-Defaults. created_at ist NOT NULL und muss daher auch
- * für importierte Altdaten explizit vorhanden sein.
- *
- * Bei bestehenden Datensätzen den ursprünglichen Zeitstempel beibehalten.
+ * Supabase-Datenbankpayload aus genau den echten Tabellenspalten zusammenstellen.
+ * ShoppingItem kommt aus der UI mit zusätzlichem image_url (signed storage URL),
+ * das KEINE Datenbankspalte ist und niemals gespeichert werden darf.
  */
-export function itemUpsertPayload(householdId: string, item: ItemDraft, nowIso = new Date().toISOString()) {
-  const createdAt = typeof item.created_at === 'string' && !Number.isNaN(Date.parse(item.created_at))
-    ? item.created_at
-    : nowIso
+export function itemFields(item: ItemDraft) {
   return {
-    ...item,
+    id: item.id,
+    name: item.name,
+    description: item.description,
+    price_cents: item.price_cents,
+    quantity: item.quantity,
+    room: item.room,
+    retailer: item.retailer,
+    priority: item.priority,
+    status: item.status,
+    url: item.url,
+    image_path: item.image_path,
+    note: item.note,
+    source: item.source,
+    origin: item.origin,
+    position: item.position,
+  }
+}
+
+export function itemUpdatePayload(item: ItemDraft) {
+  // Erstellungsdatum, Datenbanktrigger-Felder und Haushalt-ID NIE überschreiben.
+  return itemFields(item)
+}
+
+export function itemUpsertPayload(householdId: string, item: ItemDraft, nowIso = new Date().toISOString()) {
+  const validTime = typeof item.created_at === 'string' && !Number.isNaN(Date.parse(item.created_at))
+  return {
+    ...itemFields(item),
     household_id: householdId,
-    created_at: createdAt,
+    created_at: validTime ? item.created_at! : nowIso,
+    updated_at: nowIso,
   }
 }

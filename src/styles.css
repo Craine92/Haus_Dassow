@@ -38,3 +38,17 @@
   .auth-card > .text-button + .text-button { margin-left: 0; }
 }
 @media print { .product-image { height: 140px; } .product-image-empty button { display: none; } }
+
+/* Fehler-/Erfolgsmeldungen auch beim Scrollen und auf dem Handy sichtbar halten. */
+.action-feedback {
+  position: fixed; bottom: max(18px, env(safe-area-inset-bottom)); right: 18px;
+  left: max(18px, 260px); z-index: 50; max-width: 650px; margin-left: auto;
+  background: #e3f1e9; color: #20493c; border: 1px solid #a4d5be;
+  border-radius: 13px; box-shadow: 0 12px 38px #17242b33;
+  padding: 14px 16px; display: flex; gap: 16px; justify-content: space-between;
+  align-items: start; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere;
+}
+.action-feedback.fail { background: #fff0f1; color: #903644; border-color: #e7b9bd; }
+.action-feedback button { background: none; border: none; color: inherit; font-size: 24px; flex: 0 0 auto; padding: 0; }
+.button.danger { border-color: #b84955; background: #b84955; color: #fff; }
+@media(max-width:800px){ .action-feedback { left: 18px; max-width: none; } }
